@@ -1,0 +1,68 @@
+<!doctype html> 
+<html> 
+    <head> 
+        <meta charset="UTF-8"> 
+    </head> 
+    <body> 
+        <input type="button" value="GET" onClick="get()"/> 
+        <script> const API_URL = ' https://hmq7d9b499.execute-api.us-east-1.amazonaws.com/TestRestAPI/user'; 
+        function get() { 
+            fetch(API_URL, { 
+                headers: { 
+                    'Accept': 'application/json' } }).then(res => res.json()) .then(data => console.log(data)) .catch(err => console.error(err)); 
+                    } 
+                    </script> 
+                    </body> 
+                    </html>
+"use strict"; 
+const mongoose = require('mongoose');
+const MONGODB_URI = process.env.MONGODB_URI; 
+/* Board 오브젝트를 정의합니다. */ 
+const boardSchema = mongoose.Schema({ 
+    id: { 
+        type: Number, 
+        required: true 
+    }, 
+    name: { 
+        type: String, 
+        required: true 
+    }, 
+    password: { 
+        type: String, 
+        required: true 
+    }, 
+    content: { 
+        type: String, 
+        required: true 
+    }, 
+    date: { 
+        type: Date, 
+        required: true 
+    } }); 
+    /* 하나의 연결 객체를 반복적으로 사용합니다. */ 
+    let connection = null; 
+    const connect = () => { 
+        if (connection && mongoose.connection.readyState === 1) 
+            return Promise.resolve(connection); 
+        return mongoose.connect(process.env.MONGODB_URI, 
+        { useNewUrlParser: true }).then( conn => { 
+            connection = conn; 
+            return connection; 
+        } ); 
+    }; 
+    module.exports.handler = (event, context, callback) => { 
+        let operation = event.httpMethod; 
+        let Board = mongoose.model('board', boardSchema); 
+        let proxy, password; 
+        switch (operation) { 
+            case 'GET': /* 경로: /board 설명: 전체 게시글 정보를 불러옵니다. */ 
+            if(event.pathParameters === null) { 
+                let query = {}; 
+                if(event.queryStringParameters.name) { 
+                    query.name = {$regex:event.queryStringParameters.name, $options: 'i'}; 
+                } 
+                if(event.queryStringParameters.content) { 
+                    query.content = {$regex:event.queryStringParameters.content, $option: 'i'}; 
+                } // name과 content를 이용하여 검색한 결과를 내림차순으로 반환합니다. 
+                connect().then(() => Board.find(query) .select("-password") .sort({id: -1}) .exec(function(error, boards) { if(error) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(error) }); } else { context.done(null, { 'statusCode': 200, 'body': JSON.stringify(boards) }); } })); } /* 경로: /board/:id 설명: 특정 게시글 정보를 불러옵니다. */ else { proxy = event.pathParameters.proxy; connect().then(() => Board.findOne({id:proxy}) .select("-password") .exec(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(err) }); } else if(!board) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify("Board not found.") }); } else { context.done(null, { 'statusCode': 200, 'body': JSON.stringify(board) }); } })); } break; case 'POST': /* 경로: /board 파라미터: {"name":"작성자","content":"내용","password":"비밀번호"} 설명: 특정 게시글을 작성합니다. */ let lastId = 0; // 가장 최근에 작성된 게시물 번호를 가져옵니다. connect().then(() => Board.findOne({}) .sort({id: -1}) .exec(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': err }); } else { lastId = board ? board.id : 0; const { name, content, password } = JSON.parse(event.body); const newBoard = new Board({ name, content, password }); newBoard.date = new Date(); newBoard.id = lastId + 1; // 새로운 글을 등록합니다. newBoard.save(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(err) }); } else { context.done(null, { 'statusCode': 200, 'body': JSON.stringify(lastId + 1) }); } }); } }) ); break; case 'PUT': /* 경로: /board/:id 헤더: password:"현재 비밀번호" 파라미터: {"name":"작성자","content":"내용","password":"비밀번호"} 설명: 특정 게시글을 수정합니다. */ proxy = event.pathParameters.proxy; password = event.headers.password; // 사용자가 입력한 번호의 게시물을 찾습니다. connect().then(() => Board.findOne({id:proxy}) .exec(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(err) }); } else if(!board) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify("Board not found.") }); } else { if(board.password != password) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify("Password is incorrect.") }); } else { const { name, content, password } = JSON.parse(event.body); // 사용자가 입력한 name, content, password에 맞게 정보를 변경합니다. Board.findOneAndUpdate({id:proxy}, { name, content, password }) .exec(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(err) }); } else { context.done(null, { 'statusCode': 200, 'body': JSON.stringify('success') }); } }); } } })); break; case 'DELETE': /* 경로: /board/:id 헤더: password:"현재 비밀번호" 설명: 특정 게시글을 삭제합니다. */ proxy = event.pathParameters.proxy; password = event.headers.password; connect().then(() => Board.findOne({id:proxy}) .exec(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(err) }); } else if(!board) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify("Board not found.") }); } else { if(board.password != password) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify("Password is incorrect.") }); } else { // 사용자가 입력한 번호에 해당하는 게시물을 삭제합니다. Board.findOneAndRemove({id:proxy}) .exec(function(err, board) { if(err) { context.done(null, { 'statusCode': 500, 'body': JSON.stringify(err) }); } else { context.done(null, { 'statusCode': 200, 'body': JSON.stringify('success') }); } }); } } })); break; default: callback(new Error(`Unrecognized operation "${operation}"`)); } };
+
